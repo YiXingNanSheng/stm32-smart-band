@@ -1,0 +1,6 @@
+# 统一换行符处理，避免 Windows / Linux 协作时整文件 diff
+*           text=auto
+
+# Keil 工程文件保持 CRLF，否则某些版本解析异常
+*.uvprojx   text eol=crlf
+*.bat       text eol=crlf
