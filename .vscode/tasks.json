@@ -1,0 +1,77 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "编译",
+      "type": "shell",
+      "command": "${workspaceFolder}\\\\.vscode\\\\build.bat",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": {
+        "owner": "cpp",
+        "fileLocation": [
+          "relative",
+          "${workspaceFolder}"
+        ],
+        "pattern": {
+          "regexp": "^(.*)\\((\\d+)\\):\\s+(warning|error)\\s*#?\\d*:?\\s*(.*)$",
+          "file": 1,
+          "line": 2,
+          "severity": 3,
+          "message": 4
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "烧录",
+      "type": "shell",
+      "command": "D:////keil5_MDK////ARM////Segger////JLink.exe",
+      "args": [
+        "-device",
+        "STM32F103C8",
+        "-if",
+        "SWD",
+        "-speed",
+        "4000",
+        "-autoconnect",
+        "1",
+        "-CommanderScript",
+        "${workspaceFolder}\\\\.vscode\\\\flash.jlink"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "编译并烧录",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "编译",
+        "烧录"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "清理中间文件",
+      "type": "shell",
+      "command": "cmd",
+      "args": [
+        "/c",
+        "if exist Obj rmdir /s /q Obj"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

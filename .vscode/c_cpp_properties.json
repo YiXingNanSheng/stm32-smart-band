@@ -1,0 +1,30 @@
+{
+  "configurations": [
+    {
+      "name": "STM32F103",
+      "includePath": [
+        "${workspaceFolder}/User",
+        "${workspaceFolder}/Public",
+        "${workspaceFolder}/Libraries/CMSIS",
+        "${workspaceFolder}/Libraries/STM32F10x_StdPeriph_Driver/inc",
+        "${workspaceFolder}/APP/led",
+        "${workspaceFolder}/APP/buzzer",
+        "${workspaceFolder}/APP/relay",
+        "${workspaceFolder}/APP/key",
+        "${workspaceFolder}/APP/dht11",
+        "${workspaceFolder}/APP/oled",
+        "${workspaceFolder}/APP/ds18b20",
+        "${workspaceFolder}/APP/mpu6050",
+        "${workspaceFolder}/APP/max30102"
+      ],
+      "defines": [
+        "USE_STDPERIPH_DRIVER",
+        "STM32F10X_MD"
+      ],
+      "cStandard": "c99",
+      "intelliSenseMode": "gcc-arm",
+      "compilerPath": ""
+    }
+  ],
+  "version": 4
+}

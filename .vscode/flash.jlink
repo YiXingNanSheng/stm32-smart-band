@@ -1,0 +1,8 @@
+si SWD
+speed 4000
+r
+h
+loadfile .\Obj\Template.hex
+r
+g
+qc

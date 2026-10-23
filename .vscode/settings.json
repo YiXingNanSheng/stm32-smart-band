@@ -1,0 +1,21 @@
+{
+  "files.autoGuessEncoding": true,
+  "[c]": {
+    "files.encoding": "gbk"
+  },
+  "[cpp]": {
+    "files.encoding": "gbk"
+  },
+  "files.associations": {
+    "*.h": "c"
+  },
+  "search.exclude": {
+    "**/Obj": true,
+    "**/*.bak*": true,
+    "**/build_*.log": true
+  },
+  "files.watcherExclude": {
+    "**/Obj/**": true
+  },
+  "C_Cpp.default.cppStandard": "c++11"
+}
