@@ -336,7 +336,7 @@
               <MiscControls></MiscControls>
               <Define>USE_STDPERIPH_DRIVER</Define>
               <Undefine></Undefine>
-              <IncludePath>.\User;.\Libraries\CMSIS;.\Libraries\STM32F10x_StdPeriph_Driver\inc;.\APP\led;.\Public;.\APP\buzzer;.\APP\relay;.\APP\key;.\APP\dht11;.\APP\oled;.\APP\ds18b20;.\APP\mpu6050;.\APP\max30102</IncludePath>
+              <IncludePath>.\User;.\Libraries\CMSIS;.\Libraries\STM32F10x_StdPeriph_Driver\inc;.\APP\led;.\Public;.\APP\buzzer;.\APP\relay;.\APP\key;.\APP\dht11;.\APP\oled;.\APP\ds18b20;.\APP\mpu6050;.\APP\step;.\APP\max30102</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -516,24 +516,24 @@
           <GroupName>APP</GroupName>
           <Files>
             <File>
-              <FileName>led.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\APP\led\led.c</FilePath>
-            </File>
-            <File>
               <FileName>led.h</FileName>
               <FileType>5</FileType>
               <FilePath>.\APP\led\led.h</FilePath>
             </File>
             <File>
-              <FileName>buzzer.c</FileName>
+              <FileName>led.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\APP\buzzer\buzzer.c</FilePath>
+              <FilePath>.\APP\led\led.c</FilePath>
             </File>
             <File>
               <FileName>buzzer.h</FileName>
               <FileType>5</FileType>
               <FilePath>.\APP\buzzer\buzzer.h</FilePath>
+            </File>
+            <File>
+              <FileName>buzzer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\APP\buzzer\buzzer.c</FilePath>
             </File>
             <File>
               <FileName>relay.h</FileName>
@@ -546,19 +546,14 @@
               <FilePath>.\APP\relay\relay.c</FilePath>
             </File>
             <File>
-              <FileName>key.c</FileName>
-              <FileType>1</FileType>
-              <FilePath>.\APP\key\key.c</FilePath>
-            </File>
-            <File>
               <FileName>key.h</FileName>
               <FileType>5</FileType>
               <FilePath>.\APP\key\key.h</FilePath>
             </File>
             <File>
-              <FileName>dht11.c</FileName>
+              <FileName>key.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\APP\dht11\dht11.c</FilePath>
+              <FilePath>.\APP\key\key.c</FilePath>
             </File>
             <File>
               <FileName>dht11.h</FileName>
@@ -566,9 +561,9 @@
               <FilePath>.\APP\dht11\dht11.h</FilePath>
             </File>
             <File>
-              <FileName>oled.c</FileName>
+              <FileName>dht11.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\APP\oled\oled.c</FilePath>
+              <FilePath>.\APP\dht11\dht11.c</FilePath>
             </File>
             <File>
               <FileName>oled.h</FileName>
@@ -576,9 +571,9 @@
               <FilePath>.\APP\oled\oled.h</FilePath>
             </File>
             <File>
-              <FileName>ds18b20.c</FileName>
+              <FileName>oled.c</FileName>
               <FileType>1</FileType>
-              <FilePath>.\APP\ds18b20\ds18b20.c</FilePath>
+              <FilePath>.\APP\oled\oled.c</FilePath>
             </File>
             <File>
               <FileName>ds18b20.h</FileName>
@@ -586,14 +581,44 @@
               <FilePath>.\APP\ds18b20\ds18b20.h</FilePath>
             </File>
             <File>
+              <FileName>ds18b20.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\APP\ds18b20\ds18b20.c</FilePath>
+            </File>
+            <File>
+              <FileName>mpu6050.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\APP\mpu6050\mpu6050.h</FilePath>
+            </File>
+            <File>
               <FileName>mpu6050.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\APP\mpu6050\mpu6050.c</FilePath>
             </File>
             <File>
+              <FileName>step.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\APP\step\step.h</FilePath>
+            </File>
+            <File>
+              <FileName>step.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\APP\step\step.c</FilePath>
+            </File>
+            <File>
+              <FileName>max30102.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\APP\max30102\max30102.h</FilePath>
+            </File>
+            <File>
               <FileName>max30102.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\APP\max30102\max30102.c</FilePath>
+            </File>
+            <File>
+              <FileName>hr.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\APP\max30102\hr.h</FilePath>
             </File>
             <File>
               <FileName>hr.c</FileName>

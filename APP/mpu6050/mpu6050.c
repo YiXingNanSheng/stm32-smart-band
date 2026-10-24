@@ -231,17 +231,60 @@ static uint32_t MPU6050_ISqrt(uint32_t n)
 	return r;
 }
 
-/* 合加速度（mg）：静止约 1000，走路 1000~2000，跌落会突然变小 */
-int16_t MPU6050_GetAccelMagnitudeMG(void)
+/* 由三轴 mg 值算合加速度 sqrt(x^2 + y^2 + z^2)：
+ * 每项先 /4 缩小，和最大约 1.9e8 不会溢出 u32，最后开方结果 ×2 还原 */
+static int16_t MPU6050_CalcMagMG(int16_t x, int16_t y, int16_t z)
 {
-	int16_t x, y, z;
 	uint32_t sum;
-
-	MPU6050_GetAccelMG(&x, &y, &z);
 
 	sum = (uint32_t)((int32_t)x * x / 4) +
 	      (uint32_t)((int32_t)y * y / 4) +
 	      (uint32_t)((int32_t)z * z / 4);
 
 	return (int16_t)(MPU6050_ISqrt(sum) * 2);
+}
+
+/* 合加速度（mg）：静止约 1000，走路 1000~2000，跌落会突然变小 */
+int16_t MPU6050_GetAccelMagnitudeMG(void)
+{
+	int16_t x, y, z;
+
+	MPU6050_GetAccelMG(&x, &y, &z);
+
+	return MPU6050_CalcMagMG(x, y, z);
+}
+
+/* 带返回状态的三轴读取：0=成功，1=I2C 读失败
+ * 计步这类连续采样算法必须能区分"读到数据"和"总线失败"，
+ * 否则总线抖动时会拿上一次的旧值当新样本，造成虚假峰值 */
+uint8_t MPU6050_ReadAccelMG(int16_t *AccX, int16_t *AccY, int16_t *AccZ)
+{
+	uint8_t buf[6];
+	int16_t x, y, z;
+
+	if(MPU6050_ReadRegs(MPU6050_ACCEL_XOUT_H, buf, 6))
+		return 1;
+
+	x = (int16_t)((buf[0] << 8) | buf[1]);
+	y = (int16_t)((buf[2] << 8) | buf[3]);
+	z = (int16_t)((buf[4] << 8) | buf[5]);
+
+	if(AccX) *AccX = (int16_t)((int32_t)x * 1000 / MPU6050_ACCEL_LSB_PER_G);
+	if(AccY) *AccY = (int16_t)((int32_t)y * 1000 / MPU6050_ACCEL_LSB_PER_G);
+	if(AccZ) *AccZ = (int16_t)((int32_t)z * 1000 / MPU6050_ACCEL_LSB_PER_G);
+
+	return 0;
+}
+
+/* 带返回状态的合加速度读取：0=成功，1=读失败（调用方应丢弃本次样本） */
+uint8_t MPU6050_ReadMagnitudeMG(int16_t *MagMG)
+{
+	int16_t x, y, z;
+
+	if(MPU6050_ReadAccelMG(&x, &y, &z))
+		return 1;
+
+	if(MagMG) *MagMG = MPU6050_CalcMagMG(x, y, z);
+
+	return 0;
 }

@@ -7,13 +7,14 @@
 #include "dht11.h"
 #include "ds18b20.h"
 #include "mpu6050.h"
+#include "step.h"
 #include "max30102.h"
 #include "hr.h"
 #include "usart.h"
 #include "usart2.h"
 #include "oled.h"
 
-#define UI_PAGE_NUM		3
+#define UI_PAGE_NUM		4
 /* 两层宏：先把 UI_PAGE_NUM 展开成 3，再字符串化成 "3"，
    这样改页数只需要改上面一个数字，页码显示自动跟着变 */
 #define UI_STR_(x)		#x
@@ -49,6 +50,12 @@ typedef struct
     u16 peak;                           /* 交流峰值幅度 */
     u8  finger;                         /* 手指在位 */
     u8  alarm;                          /* 1=心率异常报警中 */
+    u32 steps;                          /* 累计步数 */
+    u16 cadence;                        /* 步频 步/分钟 */
+    s16 step_mag;                       /* 合加速度原始值 mg */
+    s16 step_flt;                       /* 滤波后合加速度 mg */
+    u8  moving;                         /* 1=运动中 */
+    u8  step_err;                       /* 1=计步传感器数据异常 */
 } UI_Data_t;
 
 static UI_Data_t g_ui;
@@ -222,6 +229,37 @@ static void UI_Page3(void)
     OLED_ShowNum(36, 52, g_ui.peak, OLED_FONT_8);
 }
 
+/* ============================ 第 4 页：计步 ============================ */
+static void UI_Page4(void)
+{
+    OLED_ShowString(0, 0, "PEDOMETER", OLED_FONT_8);
+    OLED_ShowString(100, 0, "P4/" UI_PAGE_TOTAL, OLED_FONT_8);
+
+    /* 步数，大字显示 */
+    OLED_ShowNum(0, 10, (s32)g_ui.steps, OLED_FONT_16);
+    OLED_ShowString(48, 18, "steps", OLED_FONT_8);
+
+    OLED_DrawLine(0, 30, 127, 30, OLED_WHITE);
+
+    OLED_ShowString(0, 34, "CAD", OLED_FONT_8);
+    OLED_ShowNum(24, 34, g_ui.cadence, OLED_FONT_8);
+    OLED_ShowString(54, 34, "spm", OLED_FONT_8);
+
+    OLED_ShowString(84, 34, g_ui.moving ? "WALK" : "STAY", OLED_FONT_8);
+
+    OLED_ShowString(0, 44, "RAW", OLED_FONT_8);
+    OLED_ShowNum(24, 44, g_ui.step_mag, OLED_FONT_8);
+    OLED_ShowString(66, 44, "mg", OLED_FONT_8);
+
+    OLED_ShowString(0, 54, "FLT", OLED_FONT_8);
+    OLED_ShowNum(24, 54, g_ui.step_flt, OLED_FONT_8);
+
+    if(g_ui.step_err)
+        OLED_ShowString(84, 54, "I2C ERR", OLED_FONT_8);
+    else
+        OLED_ShowString(84, 54, "SENSOR", OLED_FONT_8);
+}
+
 static void UI_Refresh(void)
 {
     OLED_ClearBuffer();
@@ -230,8 +268,10 @@ static void UI_Refresh(void)
         UI_Page1();
     else if(g_ui.page == 1)
         UI_Page2();
-    else
+    else if(g_ui.page == 2)
         UI_Page3();
+    else
+        UI_Page4();
 
     OLED_Refresh();
 }
@@ -262,6 +302,8 @@ int main(void)
 
     MPU6050_Init();
     printf("MPU6050 ID = 0x%02X\r\n", MPU6050_GetID());
+
+    STEP_Init();                        /* 计步：TIM2 时间基准 + 检测器清零 */
 
     MAX30102_Init();
     HR_Init();
@@ -298,6 +340,16 @@ int main(void)
             }
         }
 
+        /* ---------- 计步：每轮调用，内部按 50Hz 节拍读 MPU6050 ---------- */
+        if(STEP_Poll())
+        {
+            g_ui.steps   = STEP_GetCount();
+            g_ui.cadence = STEP_GetCadence();
+            ui_dirty = 1;
+            printf("[STEP] %lu  cadence=%d spm\r\n",
+                   (unsigned long)g_ui.steps, (int)g_ui.cadence);
+        }
+
         key = KEY_Scan();
 
         /* ---------- 蓝牙命令：1~4 等价按键，? 帮助，DATA 读一次当前数据 ---------- */
@@ -309,19 +361,33 @@ int main(void)
             else if(bt_cmd[0] == '2') key = KEY2;
             else if(bt_cmd[0] == '3') key = KEY3;
             else if(bt_cmd[0] == '4') key = KEY4;
+            else if(bt_cmd[0] == '0')      /* 步数清零 */
+            {
+                STEP_Reset();
+                g_ui.steps   = 0;
+                g_ui.cadence = 0;
+                g_ui.step_mag = 0;
+                g_ui.step_flt = 0;
+                g_ui.moving  = 0;
+                g_ui.step_err = 0;
+                ui_dirty = 1;
+                USART2_SendString("STEP CLEARED\r\n");
+                printf("[STEP] cleared\r\n");
+            }
             /* 帮助：半角 ?、字母 h/H，以及全角问号（GBK A3BF / UTF-8 EFBC9F）都认 */
             else if(bt_cmd[0] == '?' || bt_cmd[0] == 'h' || bt_cmd[0] == 'H'
                  || ((u8)bt_cmd[0] == 0xA3 && (u8)bt_cmd[1] == 0xBF)
                  || ((u8)bt_cmd[0] == 0xEF && (u8)bt_cmd[1] == 0xBC && (u8)bt_cmd[2] == 0x9F))
             {
-                USART2_SendString("1:page 2:led 3:buz 4:rly DATA:read  h:help\r\n");
+                USART2_SendString("1:page 2:led 3:buz 4:rly 0:stepclr DATA:read h:help\r\n");
             }
             else if(bt_cmd[0] == 'D' || bt_cmd[0] == 'd')
             {
-                char tx[64];
-                sprintf(tx, "BODY:%d.%d ENV:%dC/%d%% A:%dmg HR:%d%s\r\n",
+                char tx[96];
+                sprintf(tx, "BODY:%d.%d ENV:%dC/%d%% A:%dmg HR:%d STEP:%lu CAD:%d%s\r\n",
                         g_ui.body / 10, g_ui.body % 10,
                         (int)g_ui.temp, (int)g_ui.humi, g_ui.mag, (int)g_ui.hr,
+                        (unsigned long)g_ui.steps, (int)g_ui.cadence,
                         g_ui.alarm ? " ALARM" : "");
                 USART2_SendString(tx);
             }
@@ -397,6 +463,20 @@ int main(void)
             g_ui.mag = MPU6050_GetAccelMagnitudeMG();
             printf("ACC: %d %d %d | GYR: %d %d %d | |A| = %d mg\r\n",
                    g_ui.ax, g_ui.ay, g_ui.az, g_ui.gx, g_ui.gy, g_ui.gz, g_ui.mag);
+
+            /* 计步结果（步数本身在 STEP_Poll 里实时更新，这里同步界面数据和状态） */
+            g_ui.steps    = STEP_GetCount();
+            g_ui.cadence  = STEP_GetCadence();
+            g_ui.step_mag = STEP_GetRawMG();
+            g_ui.step_flt = STEP_GetFilteredMG();
+            g_ui.moving   = STEP_IsMoving();
+            g_ui.step_err = (STEP_GetStatus() == STEP_STATUS_ERROR) ? 1 : 0;
+
+            printf("STEP: %lu steps, %d spm, |A|=%d/%d mg, %s%s\r\n",
+                   (unsigned long)g_ui.steps, (int)g_ui.cadence,
+                   (int)g_ui.step_mag, (int)g_ui.step_flt,
+                   g_ui.moving ? "MOVING" : "STATIC",
+                   g_ui.step_err ? " SENSOR-ERR" : "");
 
             /* MAX30102 + 心率 */
             g_ui.hr     = HR_GetRate();

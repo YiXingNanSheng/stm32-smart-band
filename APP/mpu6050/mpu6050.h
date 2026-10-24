@@ -42,4 +42,8 @@ void MPU6050_GetAccelMG(int16_t *AccX, int16_t *AccY, int16_t *AccZ);
 void MPU6050_GetGyroDPS10(int16_t *GyroX, int16_t *GyroY, int16_t *GyroZ);
 int16_t MPU6050_GetAccelMagnitudeMG(void);
 
+/* 带返回状态的读取：0=成功，1=I2C 读失败（计步等连续采样算法使用） */
+uint8_t MPU6050_ReadAccelMG(int16_t *AccX, int16_t *AccY, int16_t *AccZ);
+uint8_t MPU6050_ReadMagnitudeMG(int16_t *MagMG);
+
 #endif
