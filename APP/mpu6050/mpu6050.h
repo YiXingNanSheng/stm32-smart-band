@@ -34,6 +34,10 @@ void MPU6050_Init(void);
 uint8_t MPU6050_GetID(void);
 uint8_t MPU6050_IsOnline(void);
 
+/* I2C 总线解锁：从机异常把 SDA 拉低导致主机发不出 START 时，
+ * 手动打 9 个 SCL 脉冲让它释放总线。调用后需重新 MPU6050_Init()。 */
+void MPU6050_BusUnlock(void);
+
 void MPU6050_GetData(int16_t *AccX, int16_t *AccY, int16_t *AccZ,
                      int16_t *GyroX, int16_t *GyroY, int16_t *GyroZ);
 

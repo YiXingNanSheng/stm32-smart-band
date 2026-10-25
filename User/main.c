@@ -69,6 +69,7 @@ typedef struct
     u32 dc_ir;                          /* 红外直流，用于判断贴合压力是否过大 */
     u8  heart_on;                       /* 1=显示心跳图标（随心跳闪现） */
     u8  sig;                            /* 血氧信号质量 0~100 */
+    u8  imu_err;                        /* 1=MPU6050 掉线（供电跌落/总线异常） */
 } UI_Data_t;
 
 static UI_Data_t g_ui;
@@ -217,8 +218,15 @@ static void UI_Page2(void)
     OLED_ShowString(66, 48, "mg", OLED_FONT_8);
 
     /* ---------- 三轴陀螺（整数近似，0.1°/s -> °/s） ---------- */
-    sprintf(buf, "G %d %d %d", g_ui.gx / 10, g_ui.gy / 10, g_ui.gz / 10);
-    OLED_ShowString(0, 57, buf, OLED_FONT_8);
+    if(g_ui.imu_err)
+    {
+        OLED_ShowString(0, 57, "IMU OFFLINE", OLED_FONT_8);
+    }
+    else
+    {
+        sprintf(buf, "G %d %d %d", g_ui.gx / 10, g_ui.gy / 10, g_ui.gz / 10);
+        OLED_ShowString(0, 57, buf, OLED_FONT_8);
+    }
 }
 
 /* ============================ 第 4 页：心率（新版界面） ============================
@@ -524,7 +532,8 @@ int main(void)
     printf("P5 = SpO2: keep finger still 5s, REF value only\r\n");
 
     USART2_SendString("BT READY\r\n");
-    USART2_SendString("cmd: 1/2/3/4  ?=help  DATA=read\r\n");
+    USART2_SendString("[1]page [2]led [3]buz [4]rly\r\n");
+    USART2_SendString("[0]stepclr DATA read h help\r\n");
 
     while(1)
     {
@@ -587,14 +596,22 @@ int main(void)
                  || ((u8)bt_cmd[0] == 0xA3 && (u8)bt_cmd[1] == 0xBF)
                  || ((u8)bt_cmd[0] == 0xEF && (u8)bt_cmd[1] == 0xBC && (u8)bt_cmd[2] == 0x9F))
             {
-                USART2_SendString("1:page 2:led 3:buz 4:rly 0:stepclr DATA:read h:help\r\n");
+                /* 帮助拆成两行短句：9600bps 下一行超过 40 字符，手机 App 容易折行错位 */
+                USART2_SendString("[1] page  [2] led  [3] buz  [4] rly\r\n");
+                USART2_SendString("[0] stepclr  DATA read  h help\r\n");
             }
             else if(bt_cmd[0] == 'D' || bt_cmd[0] == 'd')
             {
-                char tx[96];
-                sprintf(tx, "BODY:%d.%d ENV:%dC/%d%% A:%dmg HR:%d STEP:%lu CAD:%d SPO2:%d%s%s\r\n",
+                /* 数据分两行发：一行体温环境，一行运动与血氧 */
+                char tx[64];
+
+                sprintf(tx, "BODY:%d.%dC ENV:%dC/%d%%\r\n",
                         g_ui.body / 10, g_ui.body % 10,
-                        (int)g_ui.temp, (int)g_ui.humi, g_ui.mag, (int)g_ui.hr,
+                        (int)g_ui.temp, (int)g_ui.humi);
+                USART2_SendString(tx);
+
+                sprintf(tx, "A:%dmg HR:%d STEP:%lu CAD:%d SPO2:%d%s%s\r\n",
+                        g_ui.mag, (int)g_ui.hr,
                         (unsigned long)g_ui.steps, (int)g_ui.cadence,
                         (int)g_ui.spo2,                       /* 0 表示无效 */
                         g_ui.alarm ? " ALARM" : "",
@@ -603,9 +620,8 @@ int main(void)
             }
             else
             {
-                char tx[16];
-                sprintf(tx, "ERR:%02X\r\n", (u8)bt_cmd[0]);   /* 回显首字节，便于看编码 */
-                USART2_SendString(tx);
+                /* 不再回显十六进制（ERR:35 这种看不懂），直接给可操作提示 */
+                USART2_SendString("? unknown cmd, send h for help\r\n");
             }
         }
 
@@ -666,6 +682,22 @@ int main(void)
                     delay_ms(100);
                     BUZZER_Ctrl(BUZZER_OFF);
                 }
+            }
+
+            /* ---------- MPU6050 在线守护 ----------
+             * 蓝牙模块收发时峰值电流可达几十毫安，会把 3.3V 拉低，
+             * MPU6050 一旦掉电复位就回到 sleep 模式，数据冻结但 I2C 仍能应答。
+             * 这里每 2 秒查一次 WHO_AM_I，发现不对就重新初始化，让它能自愈。 */
+            if(!MPU6050_IsOnline())
+            {
+                MPU6050_BusUnlock();            /* 先从机可能把 SDA 拉死，先解锁总线 */
+                MPU6050_Init();                 /* 重新写 PWR_MGMT_1 等配置，解除 sleep */
+                g_ui.imu_err = 1;
+                printf("[IMU] offline -> unlock+re-init, ID=0x%02X\r\n", MPU6050_GetID());
+            }
+            else
+            {
+                g_ui.imu_err = 0;
             }
 
             MPU6050_GetData(&g_ui.ax, &g_ui.ay, &g_ui.az,

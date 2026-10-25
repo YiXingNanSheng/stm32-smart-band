@@ -107,6 +107,44 @@ uint8_t MPU6050_ReadReg(uint8_t RegAddress)
 }
 
 
+/* ============================ 总线解锁 ============================
+ * 从机如果在读事务中途掉电/复位，可能把 SDA 一直拉低，
+ * 这时主机发 START 条件无效（SDA 本来就低），表现为所有读写都超时。
+ * 办法是把 SCL/SDA 切成普通开漏输出，手动打 9 个时钟脉冲，
+ * 让从机把残留数据位吐完并释放 SDA，最后补一个 STOP 时序。
+ * ================================================================= */
+void MPU6050_BusUnlock(void)
+{
+	GPIO_InitTypeDef GPIO_InitStructure;
+	u8 i;
+
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+
+	GPIO_InitStructure.GPIO_Pin   = MPU6050_SCL_PIN | MPU6050_SDA_PIN;
+	GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_Out_OD;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+	GPIO_SetBits(GPIOB, MPU6050_SDA_PIN);			/* 先释放 SDA */
+
+	for(i = 0; i < 9; i++)
+	{
+		GPIO_ResetBits(GPIOB, MPU6050_SCL_PIN);
+		delay_us(5);
+		GPIO_SetBits(GPIOB, MPU6050_SCL_PIN);
+		delay_us(5);
+	}
+
+	/* 补一个 STOP：SCL 高电平期间 SDA 由低变高 */
+	GPIO_ResetBits(GPIOB, MPU6050_SDA_PIN);
+	delay_us(5);
+	GPIO_SetBits(GPIOB, MPU6050_SCL_PIN);
+	delay_us(5);
+	GPIO_SetBits(GPIOB, MPU6050_SDA_PIN);
+	delay_us(5);
+}
+
+
 /* ============================ 初始化 ============================ */
 void MPU6050_Init(void)
 {
