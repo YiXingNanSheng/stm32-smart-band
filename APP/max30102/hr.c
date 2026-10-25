@@ -22,6 +22,22 @@ static u8  s_ibi_pos;
 static u32 s_dec_sum;
 static u8  s_dec_cnt;
 
+/* 界面波形缓冲：25Hz x 128 点约 5 秒，供心率页画实时曲线 */
+static s16 s_wave[HR_WAVE_LEN];
+static u8  s_wave_pos;			/* 下一个写入位置，同时也是最旧数据的位置 */
+static u8  s_beat;				/* 检测到一次心跳时置 1，界面读取后清零 */
+
+
+/* 清空波形缓冲：手指离开或 DC 未收敛时调用，避免屏幕显示冻结的旧曲线 */
+static void HR_WaveClear(void)
+{
+	u8 i;
+
+	for(i = 0; i < HR_WAVE_LEN; i++)
+		s_wave[i] = 0;
+
+	s_wave_pos = 0;
+}
 
 void HR_Init(void)
 {
@@ -40,6 +56,8 @@ void HR_Init(void)
 	s_ibi_pos    = 0;
 	s_dec_sum    = 0;
 	s_dec_cnt    = 0;
+	s_wave_pos   = 0;
+	s_beat       = 0;
 }
 
 
@@ -85,6 +103,7 @@ void HR_Feed(u32 ir)
 		s_ibi_cnt    = 0;
 		s_ibi_pos    = 0;
 		s_stable     = 0;
+		HR_WaveClear();					/* 波形复位，屏幕显示平线而不是冻结的旧曲线 */
 		return;
 	}
 
@@ -99,6 +118,7 @@ void HR_Feed(u32 ir)
 		s_ac_prev2   = 0;
 		s_peak_valid = 0;
 		s_stable     = 0;
+		HR_WaveClear();
 		return;
 	}
 
@@ -115,8 +135,11 @@ void HR_Feed(u32 ir)
 		s_stable = 0;
 	}
 
-	if(s_stable < 60)
+	if(s_stable < 60)					/* DC 还在收敛，波形保持平线 */
+	{
+		HR_WaveClear();
 		return;
+	}
 
 	/* 交流分量：必须保留符号，只检测正峰。
 	   如果取绝对值，每个心跳周期会出现正负两个峰，算出的 IBI 只有真值一半，
@@ -126,6 +149,10 @@ void HR_Feed(u32 ir)
 	/* 兜底：交流超过直流 10% 说明还在过渡（或手指在动），不当成心跳 */
 	if(ac > (s32)(s_dc / 10) || ac < -(s32)(s_dc / 10))
 		return;
+
+	/* 只在数据合理时记录波形，避免过渡期的巨大跳变画到屏幕上 */
+	s_wave[s_wave_pos] = (s16)ac;
+	s_wave_pos = (u8)((s_wave_pos + 1) % HR_WAVE_LEN);
 
 	if(ac > 0 && (u32)ac > s_peak_max)
 		s_peak_max = (u32)ac;
@@ -141,7 +168,8 @@ void HR_Feed(u32 ir)
 
 			if(ibi >= HR_MIN_IBI && ibi <= HR_MAX_IBI)
 			{
-				s_ibi = ibi;
+				s_ibi  = ibi;
+				s_beat = 1;					/* 通知界面闪一次心跳图标 */
 
 				/* IBI 滑动平均，抑制单次误检带来的跳变 */
 				s_ibi_buf[s_ibi_pos] = ibi;
@@ -225,4 +253,22 @@ u32 HR_GetPeakMax(void)
 u8 HR_IsStable(void)
 {
 	return (s_stable >= 60) ? 1 : 0;
+}
+
+
+/* ============================ 界面用接口 ============================ */
+
+/* 取波形：idx=0 是最旧的一点，idx=HR_WAVE_LEN-1 是最新一点。
+ * s_wave_pos 指向下一个待写位置，也就是当前最旧的数据，天然构成时间顺序 */
+s16 HR_GetWave(u8 idx)
+{
+	return s_wave[(u8)((s_wave_pos + idx) % HR_WAVE_LEN)];
+}
+
+u8 HR_GetBeat(void)
+{
+	u8 b = s_beat;
+
+	s_beat = 0;
+	return b;
 }

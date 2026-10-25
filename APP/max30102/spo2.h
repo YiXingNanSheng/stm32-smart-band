@@ -56,6 +56,12 @@
 #define SPO2_R_MIN			300		/* R x 1000，即 R >= 0.30 */
 #define SPO2_R_MAX			1800	/* R x 1000，即 R <= 1.80 */
 
+/* 信号质量映射区间：灌注指数 PI = AC/DC，这里用 x10000 的整数表示。
+ * 实测本模块静息 PI 在 15~60 之间（0.15%~0.60%），
+ * 低于 15 基本是噪声，到 60 就是很饱满的脉搏波。 */
+#define SPO2_PI_MIN			15
+#define SPO2_PI_MAX			60
+
 void SPO2_Init(void);
 void SPO2_Reset(void);
 
@@ -68,6 +74,8 @@ u8   SPO2_IsValid(void);			/* 1=本次结果有效 */
 u8   SPO2_IsReady(void);			/* 1=已经至少算过一次（界面显示"测量中"用） */
 u16  SPO2_GetR1000(void);			/* R 值 x1000，调试用 */
 u8   SPO2_GetPeaks(void);			/* 最近一次找出的峰数，调试用 */
+u16  SPO2_GetPI10000(void);			/* 灌注指数 AC/DC x10000，调试用 */
+u8   SPO2_GetQuality(void);			/* 信号质量 0~100，界面信号条用 */
 u32  SPO2_GetDCRed(void);			/* 红光直流分量，调试用 */
 u32  SPO2_GetDCIr(void);			/* 红外直流分量，调试用 */
 

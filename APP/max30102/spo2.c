@@ -28,6 +28,7 @@ static u32 s_dcIr;
 static u32 s_samples;					/* 累计送入的样本数 */
 static u32 s_ok_samples;				/* 最近一次成功计算时的样本数 */
 static u8  s_peaks;						/* 最近一次找出的峰数（诊断用） */
+static u16 s_pi10000;					/* 灌注指数 AC/DC x10000，信号质量依据 */
 
 static u16 s_r_hist[SPO2_R_AVG_NUM];	/* R 值滑动平均 */
 static u8  s_r_pos;
@@ -201,6 +202,11 @@ static void SPO2_Calc(void)
 	if(ac_r > 20000) ac_r = 20000;
 	if(ac_i > 20000) ac_i = 20000;
 
+	/* 灌注指数 PI = AC/DC，放大 1e4：
+	 * 它正比于搏动血量占组织总量的比例，不受 LED 电流影响，
+	 * 是判断"这次信号值不值得信"最直接的指标（AGC 调电流时尤其有用） */
+	s_pi10000 = (u16)(ac_i * 10000UL / dc_i);
+
 	/* ---------- 8. R = (ACred/DCred) / (ACir/DCir)，结果定点为 R x1000 ---------- */
 	rr = ac_r * 100000UL / dc_r;			/* AC/DC 放大 1e5，量级千 */
 	ri = ac_i * 100000UL / dc_i;
@@ -274,6 +280,7 @@ void SPO2_Reset(void)
 	s_samples    = 0;
 	s_ok_samples = 0;
 	s_peaks      = 0;
+	s_pi10000    = 0;
 	s_r_pos      = 0;
 	s_r_cnt      = 0;
 
@@ -361,6 +368,27 @@ u16 SPO2_GetR1000(void)
 u8 SPO2_GetPeaks(void)
 {
 	return s_peaks;
+}
+
+u16 SPO2_GetPI10000(void)
+{
+	return s_pi10000;
+}
+
+/* 信号质量 0~100：把 PI 线性映射到 SPO2_PI_MIN~SPO2_PI_MAX 区间。
+ * 无效时直接给 0，避免"数值有效但信号很差"时显示满格信号条 */
+u8 SPO2_GetQuality(void)
+{
+	if(!s_valid)
+		return 0;
+
+	if(s_pi10000 <= SPO2_PI_MIN)
+		return 5;
+
+	if(s_pi10000 >= SPO2_PI_MAX)
+		return 100;
+
+	return (u8)((u32)(s_pi10000 - SPO2_PI_MIN) * 100 / (SPO2_PI_MAX - SPO2_PI_MIN));
 }
 
 u32 SPO2_GetDCRed(void)

@@ -15,12 +15,7 @@
 #include "usart2.h"
 #include "oled.h"
 
-#define UI_PAGE_NUM		5
-/* 两层宏：先把 UI_PAGE_NUM 展开成 3，再字符串化成 "3"，
-   这样改页数只需要改上面一个数字，页码显示自动跟着变 */
-#define UI_STR_(x)		#x
-#define UI_STR(x)		UI_STR_(x)
-#define UI_PAGE_TOTAL	UI_STR(UI_PAGE_NUM)
+#define UI_PAGE_NUM		5		/* 页码指示器按这个数量画方块，加页只改这里 */
 
 /* ============================ 心率异常报警 ============================
  * 判定条件：手指在位、心率有效，且超出 [LOW, HIGH] 区间
@@ -72,6 +67,8 @@ typedef struct
     u16 spo2_r;                         /* R 值 x1000 */
     u8  spo2_alarm;                     /* 1=低血氧报警中 */
     u32 dc_ir;                          /* 红外直流，用于判断贴合压力是否过大 */
+    u8  heart_on;                       /* 1=显示心跳图标（随心跳闪现） */
+    u8  sig;                            /* 血氧信号质量 0~100 */
 } UI_Data_t;
 
 static UI_Data_t g_ui;
@@ -81,265 +78,396 @@ static u32 g_max_red = 0;
 static u32 g_max_ir  = 0;
 
 
-/* 把 mg 转成 "1.13" 形式的字符串（单位 g，两位小数） */
-static void Fmt_G(char *s, s16 mg)
-{
-    u8 i = 0;
-    u16 a, h;
-
-    if(mg < 0) { s[i++] = '-'; a = (u16)(-mg); }
-    else       { a = (u16)mg; }
-
-    h = (u16)((a + 5) / 10);            /* 0.01g 为单位，四舍五入 */
-
-    if(h >= 1000) s[i++] = (char)('0' + (h / 1000));
-    s[i++] = (char)('0' + (h / 100) % 10);
-    s[i++] = '.';
-    s[i++] = (char)('0' + (h / 10) % 10);
-    s[i++] = (char)('0' + h % 10);
-    s[i]   = 0;
-}
-
-/* 把 0.1°/s 转成 "-5.1" 形式的字符串 */
-static void Fmt_DPS1(char *s, s16 dps10)
-{
-    u8 i = 0;
-    u16 a;
-
-    if(dps10 < 0) { s[i++] = '-'; a = (u16)(-dps10); }
-    else          { a = (u16)dps10; }
-
-    if(a >= 1000) s[i++] = (char)('0' + (a / 1000));
-    s[i++] = (char)('0' + (a / 100) % 10);
-    s[i++] = '.';
-    s[i++] = (char)('0' + a % 10);
-    s[i]   = 0;
-}
+/* 加速度改用双向条形图、陀螺改用整数显示后，原来的两个格式化函数不再需要 */
 
 
-/* ============================ 第 1 页：体温 + 环境 + 执行器 ============================ */
+/* ============================ 第 1 页：体温 + 环境 ============================
+ * 布局：
+ *   y=0..7   状态栏：页名 + 页码指示器
+ *   y=9..40  体温大字（16x32）+ 单位
+ *   y=42..49 体温条（36~40℃ 映射，长度即直观判断）
+ *   y=52..59 环境温湿度（水滴 / 温度计图标 + 数值）
+ * 执行器状态（LED/BUZ/RLY）已从前台移除：按键时实体设备本身有反馈，
+ * 首页空间优先给体温这个核心指标。
+ * ============================================================================ */
+
+/* 8x8 图标 */
+static const u8 ICON_DROP[8] = { 0x18, 0x3C, 0x3C, 0x7E, 0x7E, 0x7E, 0x3C, 0x18 };
+static const u8 ICON_TEMP[8] = { 0x18, 0x18, 0x18, 0x1E, 0x1E, 0x3F, 0x3F, 0x1E };
+
 static void UI_Page1(void)
 {
-    OLED_ShowString(0, 0, "BODY", OLED_FONT_8);
-    OLED_ShowString(100, 0, "P1/" UI_PAGE_TOTAL, OLED_FONT_8);
+    OLED_ShowString(2, 0, "BODY", OLED_FONT_8);
+    OLED_DrawPageDots(94, 2, UI_PAGE_NUM, g_ui.page);
+
+    /* ---------- 体温大字：整数 2 位 + 小数点 + 1 位小数 ---------- */
+    if(g_ui.body_ok)
+    {
+        OLED_ShowNum2x(4, 9, g_ui.body / 10);
+        OLED_ShowChar2x(40, 9, '.');
+        OLED_ShowChar2x(56, 9, (char)('0' + g_ui.body % 10));
+    }
+    else
+    {
+        OLED_ShowChar2x(4, 9, '-');
+        OLED_ShowChar2x(20, 9, '-');
+        OLED_ShowChar2x(36, 9, '.');
+        OLED_ShowChar2x(52, 9, '-');
+    }
+    OLED_ShowString(78, 22, "C", OLED_FONT_16);
+
+    /* ---------- 体温条：36.0~40.0℃ ----------
+     * 条形长度本身就是判断依据，不需要再读数字 */
+    OLED_DrawRect(4, 42, 123, 49, OLED_WHITE);
 
     if(g_ui.body_ok)
     {
-        OLED_ShowNum(0, 8, g_ui.body / 10, OLED_FONT_16);
-        OLED_ShowString(16, 8, ".", OLED_FONT_16);
-        OLED_ShowNum(24, 8, g_ui.body % 10, OLED_FONT_16);
-    }
-    else
-    {
-        OLED_ShowString(0, 8, "--.-", OLED_FONT_16);
-    }
-    OLED_ShowString(32, 8, "C", OLED_FONT_16);
+        s32 v = (s32)g_ui.body - 360;
+        u8  fill;
 
-    OLED_DrawLine(0, 26, 127, 26, OLED_WHITE);
+        if(v < 0)  v = 0;
+        if(v > 40) v = 40;
 
-    OLED_ShowString(0, 30, "ENV", OLED_FONT_8);
-    OLED_ShowNum(18, 30, g_ui.temp, OLED_FONT_8);
-    OLED_ShowString(30, 30, "C", OLED_FONT_8);
-    OLED_ShowString(42, 30, "H", OLED_FONT_8);
-    OLED_ShowNum(48, 30, g_ui.humi, OLED_FONT_8);
-    OLED_ShowString(60, 30, "%", OLED_FONT_8);
+        fill = (u8)(v * 116 / 40);
+        if(fill > 0)
+            OLED_FillRect(5, 43, (u8)(4 + fill), 48, OLED_WHITE);
+    }
+
+    /* ---------- 环境温湿度 ---------- */
+    OLED_DrawIcon8x8(2, 52, ICON_DROP);
 
     if(g_ui.dht_ok)
-        OLED_ShowString(100, 30, "OK", OLED_FONT_8);
+    {
+        OLED_ShowNum(12, 52, g_ui.humi, OLED_FONT_8);
+        OLED_ShowString(24, 52, "%", OLED_FONT_8);
+    }
     else
     {
-        OLED_ShowString(100, 30, "E", OLED_FONT_8);
-        OLED_ShowNum(106, 30, g_ui.dht_err, OLED_FONT_8);
+        OLED_ShowString(12, 52, "--", OLED_FONT_8);
     }
 
-    OLED_ShowString(0, 40, "LED3:", OLED_FONT_8);
-    OLED_ShowNum(30, 40, g_ui.led3, OLED_FONT_8);
-    OLED_ShowString(42, 40, "LED4:", OLED_FONT_8);
-    OLED_ShowNum(72, 40, g_ui.led4, OLED_FONT_8);
+    OLED_DrawIcon8x8(44, 52, ICON_TEMP);
 
-    OLED_ShowString(0, 50, "RLY:", OLED_FONT_8);
-    OLED_ShowNum(24, 50, g_ui.rly, OLED_FONT_8);
-    OLED_ShowString(36, 50, "BUZ:", OLED_FONT_8);
-    OLED_ShowNum(60, 50, g_ui.buz, OLED_FONT_8);
-
-    OLED_DrawRect(116, 49, 126, 57, OLED_WHITE);
-    if(g_ui.rly)
-        OLED_FillRect(117, 50, 125, 56, OLED_WHITE);
+    if(g_ui.dht_ok)
+    {
+        OLED_ShowNum(54, 52, g_ui.temp, OLED_FONT_8);
+        OLED_ShowString(66, 52, "C", OLED_FONT_8);
+    }
+    else
+    {
+        OLED_ShowString(54, 52, "--", OLED_FONT_8);
+    }
 }
 
-/* ============================ 第 2 页：MPU6050 六轴 ============================ */
+/* ============================ 第 2 页：六轴姿态 ============================
+ * 布局：
+ *   y=0..7    状态栏
+ *   y=9..34   三轴加速度双向条形图（中点为零位，左右延伸表示正负）
+ *   y=37..52  合加速度大字（8x16）+ 单位
+ *   y=55..63  三轴陀螺（整数近似，°/s）
+ * 加速度用条而不是数字：判断"屏幕朝上还是侧倾"扫一眼就够，不需要读数。
+ * ============================================================================ */
+
+/* 双向条：中点为零位，正值向右、负值向左 */
+static void UI_BiBar(u8 x, u8 y, u8 w, u8 h, s16 val, s16 range)
+{
+    s32 mid, len;
+
+    OLED_DrawRect(x, y, (u8)(x + w - 1), (u8)(y + h - 1), OLED_WHITE);
+
+    mid = (s32)x + w / 2;
+    OLED_DrawLine((u8)mid, y, (u8)mid, (u8)(y + h - 1), OLED_WHITE);
+
+    if(val > range)  val = range;
+    if(val < -range) val = -range;
+
+    /* 留 2 像素余量，避免填充盖住边框 */
+    len = (s32)val * (w / 2 - 2) / range;
+
+    if(len > 0)
+        OLED_FillRect((u8)(mid + 1), (u8)(y + 1), (u8)(mid + len), (u8)(y + h - 2), OLED_WHITE);
+    else if(len < 0)
+        OLED_FillRect((u8)(mid + len), (u8)(y + 1), (u8)(mid - 1), (u8)(y + h - 2), OLED_WHITE);
+}
+
 static void UI_Page2(void)
 {
-    char buf[10];
+    char buf[24];
 
-    OLED_ShowString(0, 0, "MPU6050", OLED_FONT_8);
-    OLED_ShowString(100, 0, "P2/" UI_PAGE_TOTAL, OLED_FONT_8);
+    OLED_ShowString(2, 0, "MOTION", OLED_FONT_8);
+    OLED_DrawPageDots(94, 2, UI_PAGE_NUM, g_ui.page);
 
-    /* 加速度，单位 g */
-    OLED_ShowString(0, 9, "A(g) X", OLED_FONT_8);
-    Fmt_G(buf, g_ui.ax);
-    OLED_ShowString(36, 9, buf, OLED_FONT_8);
-    OLED_ShowString(72, 9, "Y", OLED_FONT_8);
-    Fmt_G(buf, g_ui.ay);
-    OLED_ShowString(80, 9, buf, OLED_FONT_8);
+    /* ---------- 三轴加速度：±2g ----------
+     * 标签与条形框顶部对齐（原来是 y+1，会差 1 像素） */
+    OLED_ShowString(0, 9, "AX", OLED_FONT_8);
+    UI_BiBar(14, 9, 112, 8, g_ui.ax, 2000);
 
-    OLED_ShowString(0, 18, "Z", OLED_FONT_8);
-    Fmt_G(buf, g_ui.az);
-    OLED_ShowString(8, 18, buf, OLED_FONT_8);
+    OLED_ShowString(0, 19, "AY", OLED_FONT_8);
+    UI_BiBar(14, 19, 112, 8, g_ui.ay, 2000);
 
-    /* 陀螺，单位 °/s */
-    OLED_ShowString(0, 27, "G(dps)X", OLED_FONT_8);
-    Fmt_DPS1(buf, g_ui.gx);
-    OLED_ShowString(42, 27, buf, OLED_FONT_8);
-    OLED_ShowString(72, 27, "Y", OLED_FONT_8);
-    Fmt_DPS1(buf, g_ui.gy);
-    OLED_ShowString(80, 27, buf, OLED_FONT_8);
+    OLED_ShowString(0, 29, "AZ", OLED_FONT_8);
+    UI_BiBar(14, 29, 112, 8, g_ui.az, 2000);
 
-    OLED_ShowString(0, 36, "Z", OLED_FONT_8);
-    Fmt_DPS1(buf, g_ui.gz);
-    OLED_ShowString(8, 36, buf, OLED_FONT_8);
+    /* ---------- 合加速度 ----------
+     * 标签不能用 "|A|"：6x8 字模只到 'z'，竖线 0x7C 会被替换成 '?'。
+     * 标签与数字统一用 8x16，避免一小一大显得字号不协调；
+     * 单位 mg 用小字放在右下角当下标 */
+    OLED_ShowString(0, 40, "MAG", OLED_FONT_16);
+    OLED_ShowNum(28, 40, g_ui.mag, OLED_FONT_16);
+    OLED_ShowString(66, 48, "mg", OLED_FONT_8);
 
-    /* 合加速度 */
-    OLED_ShowString(0, 45, "|A|", OLED_FONT_8);
-    OLED_ShowNum(24, 45, g_ui.mag, OLED_FONT_8);
-    OLED_ShowString(54, 45, "mg", OLED_FONT_8);
-
-    /* 提示：静止时应接近 1000mg */
-    OLED_ShowString(0, 55, "static ~1000mg", OLED_FONT_8);
+    /* ---------- 三轴陀螺（整数近似，0.1°/s -> °/s） ---------- */
+    sprintf(buf, "G %d %d %d", g_ui.gx / 10, g_ui.gy / 10, g_ui.gz / 10);
+    OLED_ShowString(0, 57, buf, OLED_FONT_8);
 }
 
-/* ============================ 第 3 页：心率 ============================ */
+/* ============================ 第 4 页：心率（新版界面） ============================
+ * 布局（128x64）：
+ *   y=0..7   状态栏：页名 + 心跳图标 + 页码指示器
+ *   y=10..41 心率大字（16x32）+ 单位
+ *   y=43     分隔线
+ *   y=45..55 实时 PPG 波形（滚动，局部刷新）
+ *   y=56..63 底栏：IBI / 峰值 / 状态
+ * ============================================================================ */
+
+/* 8x8 心形图标，bit7 在最左 */
+static const u8 ICON_HEART[8] =
+{
+    0x00, 0x66, 0xFF, 0xFF, 0x7E, 0x3C, 0x18, 0x00
+};
+
+/* 画最近 5 秒的交流波形。只改显存，刷屏由调用方决定刷哪几页 */
+static void UI_DrawWave(void)
+{
+    u8  x0 = 2, y0 = 45, w = 124, h = 11;
+    u8  i, py, last_py = 0;
+    s32 amp, mid, v;
+
+    OLED_FillRect(x0, y0, (u8)(x0 + w - 1), (u8)(y0 + h - 1), OLED_BLACK);
+
+    mid = (s32)y0 + h / 2;
+
+    /* 纵向比例：peak_max 只是正峰幅度，负峰往往更大，直接当满量程会削顶，
+     * 所以放宽 1.5 倍；信号弱时给一个下限，避免把噪声放大成毛刺 */
+    amp = (s32)HR_GetPeakMax() * 3 / 2;
+    if(amp < 200)  amp = 200;
+    if(amp > 3000) amp = 3000;
+
+    for(i = 0; i < w; i++)
+    {
+        u8  idx = (u8)(HR_WAVE_LEN - w + i);
+        s16 w0  = HR_GetWave((u8)((idx + HR_WAVE_LEN - 1) % HR_WAVE_LEN));
+        s16 w1  = HR_GetWave(idx);
+        s16 w2  = HR_GetWave((u8)((idx + 1) % HR_WAVE_LEN));
+
+        /* 显示前做 3 点加权平滑（只影响观感，不动算法数据），
+         * 25Hz 原始波形带 5~12Hz 残留噪声，不平滑会画成密集毛刺 */
+        v  = (s32)(w0 + w1 * 2 + w2) / 4;
+        py = (u8)(mid - v * (h / 2) / amp);
+
+        if(py < y0)          py = y0;
+        if(py > y0 + h - 1)  py = (u8)(y0 + h - 1);
+
+        if(i == 0)
+        {
+            OLED_DrawPoint(x0, py, OLED_WHITE);
+        }
+        else
+        {
+            /* 与上一点之间补竖线，否则快速变化处波形会断成散点 */
+            u8 a = last_py, b = py, t;
+
+            if(a > b) { t = a; a = b; b = t; }
+            for(t = a; t <= b; t++)
+                OLED_DrawPoint((u8)(x0 + i), t, OLED_WHITE);
+        }
+
+        last_py = py;
+    }
+}
+
+/* 只重画心跳页的状态栏（8px 高，刷 1 页约 5ms），
+ * 心跳闪烁时用它局部刷新，不必整屏重绘 */
+static void UI_DrawStatusBar(void)
+{
+    OLED_FillRect(0, 0, 127, 7, OLED_BLACK);
+    OLED_ShowString(2, 0, "HEART", OLED_FONT_8);
+
+    if(g_ui.heart_on)                       /* 随心跳闪现 */
+        OLED_DrawIcon8x8(66, 0, ICON_HEART);
+
+    OLED_DrawPageDots(94, 2, UI_PAGE_NUM, g_ui.page);
+}
+
 static void UI_Page3(void)
 {
-    OLED_ShowString(0, 0, "HEART RATE", OLED_FONT_8);
-    OLED_ShowString(100, 0, "P3/" UI_PAGE_TOTAL, OLED_FONT_8);
+    UI_DrawStatusBar();
 
+    /* ---------- 心率大字 ---------- */
     if(g_ui.hr > 0)
     {
-        OLED_ShowNum(28, 8, g_ui.hr, OLED_FONT_16);
-        OLED_ShowString(64, 16, "bpm", OLED_FONT_8);
-    }
-    else if(g_ui.finger)
-    {
-        OLED_ShowString(16, 12, "measuring", OLED_FONT_8);
+        OLED_ShowNum2x(4, 10, g_ui.hr);
+        OLED_ShowString(56, 24, "bpm", OLED_FONT_8);
     }
     else
     {
-        OLED_ShowString(28, 12, "--", OLED_FONT_16);
+        OLED_ShowChar2x(4, 10, '-');
+        OLED_ShowChar2x(20, 10, '-');
+        OLED_ShowString(56, 24, g_ui.finger ? "wait" : "bpm", OLED_FONT_8);
     }
 
-    OLED_DrawLine(0, 28, 127, 28, OLED_WHITE);
+    OLED_DrawLine(0, 43, 127, 43, OLED_WHITE);
+
+    /* ---------- 波形 ---------- */
+    UI_DrawWave();
+
+    /* ---------- 底栏：用竖线把三块内容分开，避免标签和数值糊在一起 ---------- */
+    OLED_ShowString(0, 56, "IBI", OLED_FONT_8);
+    OLED_ShowNum(20, 56, g_ui.ibi, OLED_FONT_8);
+
+    OLED_DrawLine(38, 56, 38, 63, OLED_WHITE);
+
+    OLED_ShowString(44, 56, "PK", OLED_FONT_8);
+    OLED_ShowNum(62, 56, g_ui.peak, OLED_FONT_8);
+
+    OLED_DrawLine(80, 56, 80, 63, OLED_WHITE);
 
     if(g_ui.alarm)
-        OLED_ShowString(0, 32, "!! HR ALARM !!", OLED_FONT_8);
-    else if(g_ui.finger)
-        OLED_ShowString(0, 32, "FINGER ON", OLED_FONT_8);
+        OLED_ShowString(84, 56, "ALARM", OLED_FONT_8);
+    else if(!g_ui.finger)
+        OLED_ShowString(84, 56, "NO FING", OLED_FONT_8);
+    else if(g_ui.hr == 0)
+        OLED_ShowString(84, 56, "MEASURE", OLED_FONT_8);
     else
-        OLED_ShowString(0, 32, "PUT FINGER ON", OLED_FONT_8);
-
-    OLED_ShowString(0, 42, "IBI:", OLED_FONT_8);
-    OLED_ShowNum(24, 42, g_ui.ibi, OLED_FONT_8);
-    OLED_ShowString(48, 42, "smp", OLED_FONT_8);
-
-    OLED_ShowString(0, 52, "Peak:", OLED_FONT_8);
-    OLED_ShowNum(36, 52, g_ui.peak, OLED_FONT_8);
+        OLED_ShowString(84, 56, "STABLE", OLED_FONT_8);
 }
 
 /* ============================ 第 4 页：计步 ============================ */
+/* ============================ 第 3 页：计步 ============================
+ * 布局：
+ *   y=0..7   状态栏
+ *   y=9..40  步数大字（16x32）
+ *   y=42     分隔线
+ *   y=45..52 万步目标进度条
+ *   y=56..63 底栏：步频 + 运动状态
+ * ============================================================================ */
 static void UI_Page4(void)
 {
-    OLED_ShowString(0, 0, "PEDOMETER", OLED_FONT_8);
-    OLED_ShowString(100, 0, "P4/" UI_PAGE_TOTAL, OLED_FONT_8);
+    u32 steps = g_ui.steps;
+    u8  fill;
 
-    /* 步数，大字显示 */
-    OLED_ShowNum(0, 10, (s32)g_ui.steps, OLED_FONT_16);
-    OLED_ShowString(48, 18, "steps", OLED_FONT_8);
+    OLED_ShowString(2, 0, "STEPS", OLED_FONT_8);
+    OLED_DrawPageDots(94, 2, UI_PAGE_NUM, g_ui.page);
 
-    OLED_DrawLine(0, 30, 127, 30, OLED_WHITE);
+    /* 五位数字宽 80 像素，再多就画不全了 */
+    if(steps > 99999)
+        steps = 99999;
 
-    OLED_ShowString(0, 34, "CAD", OLED_FONT_8);
-    OLED_ShowNum(24, 34, g_ui.cadence, OLED_FONT_8);
-    OLED_ShowString(54, 34, "spm", OLED_FONT_8);
+    OLED_ShowNum2x(4, 9, (s32)steps);
 
-    OLED_ShowString(84, 34, g_ui.moving ? "WALK" : "STAY", OLED_FONT_8);
+    OLED_DrawLine(0, 42, 127, 42, OLED_WHITE);
 
-    OLED_ShowString(0, 44, "RAW", OLED_FONT_8);
-    OLED_ShowNum(24, 44, g_ui.step_mag, OLED_FONT_8);
-    OLED_ShowString(66, 44, "mg", OLED_FONT_8);
+    /* ---------- 每日万步目标进度 ---------- */
+    OLED_ShowString(0, 46, "TGT", OLED_FONT_8);
+    OLED_DrawRect(24, 45, 123, 52, OLED_WHITE);
 
-    OLED_ShowString(0, 54, "FLT", OLED_FONT_8);
-    OLED_ShowNum(24, 54, g_ui.step_flt, OLED_FONT_8);
+    if(g_ui.steps >= 10000)
+        fill = 98;
+    else
+        fill = (u8)(g_ui.steps * 98 / 10000);
+
+    if(fill > 0)
+        OLED_FillRect(25, 46, (u8)(24 + fill), 51, OLED_WHITE);
+
+    /* ---------- 底栏 ---------- */
+    OLED_ShowString(0, 56, "CAD", OLED_FONT_8);
+    OLED_ShowNum(20, 56, g_ui.cadence, OLED_FONT_8);
+    OLED_ShowString(34, 56, "spm", OLED_FONT_8);
 
     if(g_ui.step_err)
-        OLED_ShowString(84, 54, "I2C ERR", OLED_FONT_8);
+        OLED_ShowString(70, 56, "I2C ERR", OLED_FONT_8);
+    else if(g_ui.moving)
+        OLED_ShowString(70, 56, "WALK", OLED_FONT_8);
     else
-        OLED_ShowString(84, 54, "SENSOR", OLED_FONT_8);
+        OLED_ShowString(70, 56, "STAY", OLED_FONT_8);
 }
 
-/* ============================ 第 5 页：血氧 ============================ */
+/* ============================ 第 5 页：血氧 ============================
+ * 布局：
+ *   y=0..7   状态栏：页名 + 页码指示器
+ *   y=9..40  SpO2 大字（16x32）+ 单位
+ *   y=42     分隔线
+ *   y=45..52 信号质量条（SIG）：灌注指数 PI 映射，判断这次测量值不值得信
+ *   y=56..63 底栏：心率 + 状态
+ * ============================================================================ */
 static void UI_Page5(void)
 {
-    OLED_ShowString(0, 0, "BLOOD O2", OLED_FONT_8);
-    OLED_ShowString(100, 0, "P5/" UI_PAGE_TOTAL, OLED_FONT_8);
+    u8  fill;
+    u8  px;
 
+    OLED_ShowString(2, 0, "SpO2", OLED_FONT_8);
+    OLED_DrawPageDots(94, 2, UI_PAGE_NUM, g_ui.page);
+
+    /* ---------- SpO2 大字 ---------- */
     if(g_ui.spo2_valid)
     {
-        OLED_ShowNum(20, 10, g_ui.spo2, OLED_FONT_16);
-        OLED_ShowString(52, 10, "%", OLED_FONT_16);
-        OLED_ShowString(72, 18, "SpO2", OLED_FONT_8);
-    }
-    else if(g_ui.finger)
-    {
-        OLED_ShowString(8, 12, "measuring...", OLED_FONT_8);
+        OLED_ShowNum2x(4, 9, g_ui.spo2);
     }
     else
     {
-        OLED_ShowString(20, 10, "--", OLED_FONT_16);
+        OLED_ShowChar2x(4, 9, '-');
+        OLED_ShowChar2x(20, 9, '-');
     }
 
-    OLED_DrawLine(0, 30, 127, 30, OLED_WHITE);
+    /* 100% 时数字占 3 位，百分号要往右让开 */
+    px = (g_ui.spo2_valid && g_ui.spo2 >= 100) ? 56 : 44;
+    OLED_ShowString(px, 22, "%", OLED_FONT_16);
 
-    /* 心率：仍用 25Hz 自研算法结果；与血氧算法的独立结果互为校验 */
-    OLED_ShowString(0, 34, "HR", OLED_FONT_8);
-    OLED_ShowNum(16, 34, g_ui.hr, OLED_FONT_8);
-    OLED_ShowString(40, 34, "bpm", OLED_FONT_8);
+    OLED_DrawLine(0, 42, 127, 42, OLED_WHITE);
 
-    /* R 值，显示成 0.652 形式（R x1000 定点） */
-    OLED_ShowString(68, 34, "R", OLED_FONT_8);
-    OLED_ShowNum(78, 34, g_ui.spo2_r / 1000, OLED_FONT_8);
-    OLED_ShowString(84, 34, ".", OLED_FONT_8);
-    OLED_ShowNum(90, 34, g_ui.spo2_r % 1000, OLED_FONT_8);
+    /* ---------- 信号质量条 ----------
+     * 外框 24..123，内部可填充宽度 98 像素 */
+    OLED_ShowString(0, 46, "SIG", OLED_FONT_8);
+    OLED_DrawRect(24, 45, 123, 52, OLED_WHITE);
+
+    fill = (u8)((u16)g_ui.sig * 98 / 100);
+    if(fill > 0)
+        OLED_FillRect(25, 46, (u8)(24 + fill), 51, OLED_WHITE);
+
+    /* ---------- 底栏 ---------- */
+    OLED_ShowString(0, 56, "HR", OLED_FONT_8);
+    OLED_ShowNum(16, 56, g_ui.hr, OLED_FONT_8);
 
     if(g_ui.spo2_alarm)
-        OLED_ShowString(0, 44, "!! LOW SpO2 !!", OLED_FONT_8);
+        OLED_ShowString(52, 56, "LOW O2", OLED_FONT_8);
     else if(!g_ui.finger)
-        OLED_ShowString(0, 44, "PUT FINGER ON", OLED_FONT_8);
+        OLED_ShowString(52, 56, "NO FING", OLED_FONT_8);
     else if(!g_ui.spo2_ready)
-        OLED_ShowString(0, 44, "FILL 5s BUFFER", OLED_FONT_8);
+        OLED_ShowString(52, 56, "FILL 5s", OLED_FONT_8);
     else if(g_ui.moving)
-        OLED_ShowString(0, 44, "MOVE! PAUSED", OLED_FONT_8);
+        OLED_ShowString(52, 56, "MOVE!", OLED_FONT_8);
     else if(g_ui.dc_ir > MAX30102_AGC_HI)
-        OLED_ShowString(0, 44, "LOOSE FINGER", OLED_FONT_8);	/* 压太紧：表面反射强、血流被压闭 */
+        OLED_ShowString(52, 56, "LOOSE", OLED_FONT_8);	/* 压太紧：表面反射强、血流被压闭 */
     else if(g_ui.spo2_valid)
-        OLED_ShowString(0, 44, "VALID / REF ONLY", OLED_FONT_8);
+        OLED_ShowString(52, 56, "REF VALID", OLED_FONT_8);
     else
-        OLED_ShowString(0, 44, "WEAK SIGNAL", OLED_FONT_8);
-
-    OLED_ShowString(0, 54, "keep still ~5s", OLED_FONT_8);
+        OLED_ShowString(52, 56, "WEAK SIG", OLED_FONT_8);
 }
 
 static void UI_Refresh(void)
 {
     OLED_ClearBuffer();
 
+    /* 页面顺序：P1 体温环境 / P2 六轴 / P3 计步 / P4 心率 / P5 血氧
+     * UI_Page3 与 UI_Page4 是历史命名，与当前页码已不对应，按内容调用即可 */
     if(g_ui.page == 0)
         UI_Page1();
     else if(g_ui.page == 1)
         UI_Page2();
     else if(g_ui.page == 2)
-        UI_Page3();
+        UI_Page4();                     /* 计步 */
     else if(g_ui.page == 3)
-        UI_Page4();
+        UI_Page3();                     /* 心率 */
     else
         UI_Page5();
 
@@ -359,6 +487,8 @@ int main(void)
     u8 alarm_cnt = 0;                   /* 异常持续计数（2 秒一次） */
     u8 spo2_alarm_cnt = 0;              /* 低血氧持续计数（2 秒一次） */
     u8 alarm_blink = 0;                 /* 报警闪烁节拍 */
+    u8 heart_flash = 0;                 /* 心跳图标点亮剩余轮数（10ms/轮） */
+    u8 wave_tick = 0;                   /* 波形刷新节拍（60ms 一次） */
 
     SysTick_Init(72);
     USART1_Init(115200);
@@ -576,12 +706,15 @@ int main(void)
             g_ui.spo2_r     = SPO2_GetR1000();
             g_ui.spo2_valid = (SPO2_IsValid() && !g_ui.moving) ? 1 : 0;
             g_ui.dc_ir      = SPO2_GetDCIr();
+            g_ui.sig        = SPO2_GetQuality();
 
-            printf("SPO2: %d%% HR2=%d P=%d R=%d.%03d DCr=%lu DCi=%lu valid=%d ready=%d\r\n",
+            printf("SPO2: %d%% HR2=%d P=%d R=%d.%03d PI=%d.%02d SIG=%d DCr=%lu DCi=%lu valid=%d\r\n",
                    (int)g_ui.spo2, (int)g_ui.spo2_hr, (int)SPO2_GetPeaks(),
                    (int)(g_ui.spo2_r / 1000), (int)(g_ui.spo2_r % 1000),
+                   (int)(SPO2_GetPI10000() / 100), (int)(SPO2_GetPI10000() % 100),
+                   (int)g_ui.sig,
                    SPO2_GetDCRed(), SPO2_GetDCIr(),
-                   (int)g_ui.spo2_valid, (int)g_ui.spo2_ready);
+                   (int)g_ui.spo2_valid);
 
             /* LED 电流自动增益：压太紧 DC 冲高到接近饱和，拿远又太暗，
              * 两种情况都会让 AC 提取失败，这里按实测 DC 把工作点拉回量程中段 */
@@ -714,6 +847,45 @@ int main(void)
         {
             ui_dirty = 0;
             UI_Refresh();
+        }
+
+        /* ---------- 心率页动态元素（只在该页刷新，避免拖慢 100Hz 采集） ----------
+         * 心跳图标：每次检测到心跳点亮 80ms，只刷状态栏所在 1 页（约 5ms）
+         * 波形：60ms 滚动一次，只刷波形所在 2 页（约 10ms） */
+        if(g_ui.page == 3)
+        {
+            if(HR_GetBeat())
+            {
+                heart_flash = 8;
+                if(!g_ui.heart_on)
+                {
+                    g_ui.heart_on = 1;
+                    UI_DrawStatusBar();
+                    OLED_RefreshPages(0, 0);
+                }
+            }
+            else if(heart_flash > 0)
+            {
+                if(--heart_flash == 0)
+                {
+                    g_ui.heart_on = 0;
+                    UI_DrawStatusBar();
+                    OLED_RefreshPages(0, 0);
+                }
+            }
+
+            if(++wave_tick >= 6)
+            {
+                wave_tick = 0;
+                UI_DrawWave();
+                OLED_RefreshPages(5, 6);
+            }
+        }
+        else
+        {
+            heart_flash   = 0;
+            wave_tick     = 0;
+            g_ui.heart_on = 0;
         }
 
         delay_ms(10);

@@ -177,6 +177,21 @@ void OLED_Refresh(void)
 		OLED_WritePage(page, s_gram[page]);
 }
 
+/* 只刷指定页范围：整屏 8 页约 40ms，只刷 2 页约 10ms。
+ * 波形这类高频刷新的区域用它，避免把主循环节拍（MAX30102 100Hz 采集）拖垮 */
+void OLED_RefreshPages(u8 from, u8 to)
+{
+	u8 page;
+
+	if(from > to)
+		return;
+	if(to >= OLED_PAGES)
+		to = OLED_PAGES - 1;
+
+	for(page = from; page <= to; page++)
+		OLED_WritePage(page, s_gram[page]);
+}
+
 
 /* ============================ 光标与字符 ============================ */
 void OLED_SetPos(u8 x, u8 y)
@@ -307,6 +322,109 @@ void OLED_ShowNum(u8 x, u8 y, s32 num, u8 size)
 void OLED_Print(char *str)
 {
 	OLED_ShowString(s_cx, s_cy, str, OLED_FONT_8);
+}
+
+
+/* ============================ 放大数字与图标 ============================ */
+
+/* 单字符放大 2 倍（16x32）：直接复用 8x16 字模，每个像素画成 2x2 方块。
+ * 好处是不用新增字库，风格和原有 8x16 完全一致；代价是边缘呈方块状，
+ * 但在单色点阵屏上反而更清晰。 */
+void OLED_ShowChar2x(u8 x, u8 y, char ch)
+{
+	u8 i, j, data, code;
+
+	if(ch < ' ' || ch > '~')
+		ch = '?';
+
+	code = (u8)(ch - ' ');
+
+	for(i = 0; i < 8; i++)					/* 字模上半 8 列 */
+	{
+		data = F8X16[code * 16 + i];
+		for(j = 0; j < 8; j++)
+			if(data & (1 << j))
+				OLED_FillRect((u8)(x + i * 2), (u8)(y + j * 2),
+				              (u8)(x + i * 2 + 1), (u8)(y + j * 2 + 1), OLED_WHITE);
+	}
+
+	for(i = 0; i < 8; i++)					/* 字模下半 8 列 */
+	{
+		data = F8X16[code * 16 + 8 + i];
+		for(j = 0; j < 8; j++)
+			if(data & (1 << j))
+				OLED_FillRect((u8)(x + i * 2), (u8)(y + 16 + j * 2),
+				              (u8)(x + i * 2 + 1), (u8)(y + 16 + j * 2 + 1), OLED_WHITE);
+	}
+}
+
+/* 放大数字：每个字符占 16 像素宽 */
+void OLED_ShowNum2x(u8 x, u8 y, s32 num)
+{
+	char buf[12];
+	u8 i = 0, j;
+	u32 u;
+
+	if(num < 0)
+	{
+		buf[i++] = '-';
+		u = (u32)(-num);
+	}
+	else
+	{
+		u = (u32)num;
+	}
+
+	if(u == 0)
+	{
+		buf[i++] = '0';
+	}
+	else
+	{
+		char tmp[10];
+		u8 n = 0;
+
+		while(u > 0)
+		{
+			tmp[n++] = (char)('0' + (u % 10));
+			u /= 10;
+		}
+		for(j = 0; j < n; j++)
+			buf[i++] = tmp[n - 1 - j];
+	}
+	buf[i] = 0;
+
+	for(j = 0; j < i; j++)
+		OLED_ShowChar2x((u8)(x + j * 16), y, buf[j]);
+}
+
+/* 8x8 图标：icon[0] 是最上面一行，bit7 在最左 */
+void OLED_DrawIcon8x8(u8 x, u8 y, const u8 *icon)
+{
+	u8 i, j;
+
+	if(icon == 0)
+		return;
+
+	for(j = 0; j < 8; j++)
+		for(i = 0; i < 8; i++)
+			OLED_DrawPoint((u8)(x + i), (u8)(y + j), (u8)((icon[j] >> (7 - i)) & 0x01));
+}
+
+/* 页码指示器：total 个 4x4 方块，间隔 6 像素，当前页实心 */
+void OLED_DrawPageDots(u8 x, u8 y, u8 total, u8 cur)
+{
+	u8 i, dx;
+
+	for(i = 0; i < total; i++)
+	{
+		dx = (u8)(x + i * 6);
+
+		if(i == cur)
+			OLED_FillRect(dx, y, (u8)(dx + 3), (u8)(y + 3), OLED_WHITE);
+		else
+			OLED_DrawRect(dx, y, (u8)(dx + 3), (u8)(y + 3), OLED_WHITE);
+	}
 }
 
 

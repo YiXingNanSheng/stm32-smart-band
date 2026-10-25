@@ -34,6 +34,17 @@ void OLED_Init(void);
 void OLED_ClearBuffer(void);
 void OLED_Clear(void);
 void OLED_Refresh(void);
+void OLED_RefreshPages(u8 from, u8 to);		/* 只刷指定页范围，用于局部动态区域 */
+
+/* 2 倍放大的数字（16x32）：用 8x16 字模逐像素放大，不占额外字库空间 */
+void OLED_ShowChar2x(u8 x, u8 y, char ch);
+void OLED_ShowNum2x(u8 x, u8 y, s32 num);
+
+/* 8x8 单色图标，icon[0] 是最上面一行，bit7 在左 */
+void OLED_DrawIcon8x8(u8 x, u8 y, const u8 *icon);
+
+/* 页码指示器：total 个 4x4 小方块，第 cur 个实心 */
+void OLED_DrawPageDots(u8 x, u8 y, u8 total, u8 cur);
 
 void OLED_SetPos(u8 x, u8 y);
 void OLED_ShowChar(u8 x, u8 y, char ch, u8 size);
