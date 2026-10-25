@@ -14,7 +14,8 @@
 #define HR_IBI_AVG_NUM	4			/* IBI 滑动平均窗口 */
 
 void HR_Init(void);
-void HR_Feed(u32 ir);				/* 每来一个 IR 样本调一次 */
+void HR_Feed(u32 ir);				/* 直接喂 25Hz 有效样本（保持原有用法） */
+void HR_Feed100Hz(u32 ir);			/* 喂 100Hz 原始样本，内部 4 点平均后抽取到 25Hz */
 u16  HR_GetRate(void);				/* 心率 bpm，0=尚未测出 */
 u16  HR_GetIBI(void);				/* 最近一次 IBI（样本数） */
 u8   HR_IsFingerOn(void);			/* 1=手指在位 */

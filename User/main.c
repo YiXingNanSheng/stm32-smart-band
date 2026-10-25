@@ -10,11 +10,12 @@
 #include "step.h"
 #include "max30102.h"
 #include "hr.h"
+#include "spo2.h"
 #include "usart.h"
 #include "usart2.h"
 #include "oled.h"
 
-#define UI_PAGE_NUM		4
+#define UI_PAGE_NUM		5
 /* 两层宏：先把 UI_PAGE_NUM 展开成 3，再字符串化成 "3"，
    这样改页数只需要改上面一个数字，页码显示自动跟着变 */
 #define UI_STR_(x)		#x
@@ -29,6 +30,14 @@
 #define HR_ALARM_LOW		50			/* 低于此值：心动过缓 */
 #define HR_ALARM_HIGH		110		/* 高于此值：心动过速 */
 #define HR_ALARM_CONFIRM	5			/* 连续 5 次（约 10 秒）才确认 */
+
+/* ============================ 低血氧报警 ============================
+ * 判定条件：血氧结果有效（算法判有效 + 手指在位）、未处于运动状态，
+ *           且 SpO2 低于阈值；连续 CONFIRM 次 2 秒任务（约 10 秒）确认
+ * 阈值取 90%：消费级器件精度 ±5%，再低才具备提示意义
+ * ==================================================================== */
+#define SPO2_ALARM_LOW		88			/* 校准后正常值在 93~98，低于 88 才有提示意义 */
+#define SPO2_ALARM_CONFIRM	15			/* 连续 15 次（约 30 秒）：未标定的数值抖动大，确认要更久 */
 
 /* 界面数据集中管理，避免 UI_Refresh 参数过多 */
 typedef struct
@@ -56,6 +65,13 @@ typedef struct
     s16 step_flt;                       /* 滤波后合加速度 mg */
     u8  moving;                         /* 1=运动中 */
     u8  step_err;                       /* 1=计步传感器数据异常 */
+    u8  spo2;                           /* 血氧百分比，0=无效 */
+    u8  spo2_hr;                        /* 血氧算法独立算出的心率 */
+    u8  spo2_valid;                     /* 1=本次血氧结果有效 */
+    u8  spo2_ready;                     /* 1=已完成首次 5 秒积累 */
+    u16 spo2_r;                         /* R 值 x1000 */
+    u8  spo2_alarm;                     /* 1=低血氧报警中 */
+    u32 dc_ir;                          /* 红外直流，用于判断贴合压力是否过大 */
 } UI_Data_t;
 
 static UI_Data_t g_ui;
@@ -260,6 +276,58 @@ static void UI_Page4(void)
         OLED_ShowString(84, 54, "SENSOR", OLED_FONT_8);
 }
 
+/* ============================ 第 5 页：血氧 ============================ */
+static void UI_Page5(void)
+{
+    OLED_ShowString(0, 0, "BLOOD O2", OLED_FONT_8);
+    OLED_ShowString(100, 0, "P5/" UI_PAGE_TOTAL, OLED_FONT_8);
+
+    if(g_ui.spo2_valid)
+    {
+        OLED_ShowNum(20, 10, g_ui.spo2, OLED_FONT_16);
+        OLED_ShowString(52, 10, "%", OLED_FONT_16);
+        OLED_ShowString(72, 18, "SpO2", OLED_FONT_8);
+    }
+    else if(g_ui.finger)
+    {
+        OLED_ShowString(8, 12, "measuring...", OLED_FONT_8);
+    }
+    else
+    {
+        OLED_ShowString(20, 10, "--", OLED_FONT_16);
+    }
+
+    OLED_DrawLine(0, 30, 127, 30, OLED_WHITE);
+
+    /* 心率：仍用 25Hz 自研算法结果；与血氧算法的独立结果互为校验 */
+    OLED_ShowString(0, 34, "HR", OLED_FONT_8);
+    OLED_ShowNum(16, 34, g_ui.hr, OLED_FONT_8);
+    OLED_ShowString(40, 34, "bpm", OLED_FONT_8);
+
+    /* R 值，显示成 0.652 形式（R x1000 定点） */
+    OLED_ShowString(68, 34, "R", OLED_FONT_8);
+    OLED_ShowNum(78, 34, g_ui.spo2_r / 1000, OLED_FONT_8);
+    OLED_ShowString(84, 34, ".", OLED_FONT_8);
+    OLED_ShowNum(90, 34, g_ui.spo2_r % 1000, OLED_FONT_8);
+
+    if(g_ui.spo2_alarm)
+        OLED_ShowString(0, 44, "!! LOW SpO2 !!", OLED_FONT_8);
+    else if(!g_ui.finger)
+        OLED_ShowString(0, 44, "PUT FINGER ON", OLED_FONT_8);
+    else if(!g_ui.spo2_ready)
+        OLED_ShowString(0, 44, "FILL 5s BUFFER", OLED_FONT_8);
+    else if(g_ui.moving)
+        OLED_ShowString(0, 44, "MOVE! PAUSED", OLED_FONT_8);
+    else if(g_ui.dc_ir > MAX30102_AGC_HI)
+        OLED_ShowString(0, 44, "LOOSE FINGER", OLED_FONT_8);	/* 压太紧：表面反射强、血流被压闭 */
+    else if(g_ui.spo2_valid)
+        OLED_ShowString(0, 44, "VALID / REF ONLY", OLED_FONT_8);
+    else
+        OLED_ShowString(0, 44, "WEAK SIGNAL", OLED_FONT_8);
+
+    OLED_ShowString(0, 54, "keep still ~5s", OLED_FONT_8);
+}
+
 static void UI_Refresh(void)
 {
     OLED_ClearBuffer();
@@ -270,8 +338,10 @@ static void UI_Refresh(void)
         UI_Page2();
     else if(g_ui.page == 2)
         UI_Page3();
-    else
+    else if(g_ui.page == 3)
         UI_Page4();
+    else
+        UI_Page5();
 
     OLED_Refresh();
 }
@@ -287,6 +357,7 @@ int main(void)
     u16 tick10 = 0;
     u16 ds_wait = 0;
     u8 alarm_cnt = 0;                   /* 异常持续计数（2 秒一次） */
+    u8 spo2_alarm_cnt = 0;              /* 低血氧持续计数（2 秒一次） */
     u8 alarm_blink = 0;                 /* 报警闪烁节拍 */
 
     SysTick_Init(72);
@@ -307,6 +378,7 @@ int main(void)
 
     MAX30102_Init();
     HR_Init();
+    SPO2_Init();                        /* 血氧：500 点窗口 + 滑窗 */
     printf("MAX30102 ID = 0x%02X (%s)\r\n", MAX30102_GetPartID(),
            MAX30102_IsOnline() ? "OK" : "FAIL, check J1/I2C2/PB10-PB11");
 
@@ -319,6 +391,7 @@ int main(void)
 
     printf("\r\n==== Smart Band Demo ====\r\n");
     printf("KEY1=page  KEY2=LED  KEY3=BUZ  KEY4=RELAY\r\n");
+    printf("P5 = SpO2: keep finger still 5s, REF value only\r\n");
 
     USART2_SendString("BT READY\r\n");
     USART2_SendString("cmd: 1/2/3/4  ?=help  DATA=read\r\n");
@@ -334,7 +407,12 @@ int main(void)
 
             while(MAX30102_Pop(&s) == 0)
             {
-                HR_Feed(s.ir);
+                /* 单一采样源、双消费者，绝不重复读 FIFO：
+                 *   心率：100Hz -> 内部 4 点平均抽取到 25Hz，算法参数不变
+                 *   血氧：100Hz 原始双通道，攒满 500 点做一次滑窗计算 */
+                HR_Feed100Hz(s.ir);
+                SPO2_Feed(s.red, s.ir);
+
                 g_max_red = s.red;
                 g_max_ir  = s.ir;
             }
@@ -384,11 +462,13 @@ int main(void)
             else if(bt_cmd[0] == 'D' || bt_cmd[0] == 'd')
             {
                 char tx[96];
-                sprintf(tx, "BODY:%d.%d ENV:%dC/%d%% A:%dmg HR:%d STEP:%lu CAD:%d%s\r\n",
+                sprintf(tx, "BODY:%d.%d ENV:%dC/%d%% A:%dmg HR:%d STEP:%lu CAD:%d SPO2:%d%s%s\r\n",
                         g_ui.body / 10, g_ui.body % 10,
                         (int)g_ui.temp, (int)g_ui.humi, g_ui.mag, (int)g_ui.hr,
                         (unsigned long)g_ui.steps, (int)g_ui.cadence,
-                        g_ui.alarm ? " ALARM" : "");
+                        (int)g_ui.spo2,                       /* 0 表示无效 */
+                        g_ui.alarm ? " ALARM" : "",
+                        g_ui.spo2_alarm ? " LOWO2" : "");
                 USART2_SendString(tx);
             }
             else
@@ -489,6 +569,30 @@ int main(void)
                    (int)HR_GetRate(), (int)HR_GetIBI(),
                    (int)HR_IsFingerOn(), (int)HR_IsStable());
 
+            /* ---------- 血氧：算法每秒刷新一次，运动时暂停采信 ---------- */
+            g_ui.spo2_ready = SPO2_IsReady();
+            g_ui.spo2       = SPO2_GetValue();
+            g_ui.spo2_hr    = SPO2_GetHR();
+            g_ui.spo2_r     = SPO2_GetR1000();
+            g_ui.spo2_valid = (SPO2_IsValid() && !g_ui.moving) ? 1 : 0;
+            g_ui.dc_ir      = SPO2_GetDCIr();
+
+            printf("SPO2: %d%% HR2=%d P=%d R=%d.%03d DCr=%lu DCi=%lu valid=%d ready=%d\r\n",
+                   (int)g_ui.spo2, (int)g_ui.spo2_hr, (int)SPO2_GetPeaks(),
+                   (int)(g_ui.spo2_r / 1000), (int)(g_ui.spo2_r % 1000),
+                   SPO2_GetDCRed(), SPO2_GetDCIr(),
+                   (int)g_ui.spo2_valid, (int)g_ui.spo2_ready);
+
+            /* LED 电流自动增益：压太紧 DC 冲高到接近饱和，拿远又太暗，
+             * 两种情况都会让 AC 提取失败，这里按实测 DC 把工作点拉回量程中段 */
+            if(MAX30102_AgcStep(HR_GetDC()))
+            {
+                SPO2_Reset();               /* 电流变了，旧窗口的 DC 基准不一致，重新积累 5 秒 */
+                g_ui.dc_ir = 0;
+                printf("[AGC] IR LED = 0x%02X, DC=%lu\r\n",
+                       MAX30102_GetLedPa(), HR_GetDC());
+            }
+
             /* 心率异常判断：连续异常约 10 秒才确认，恢复正常立即解除 */
             if(g_ui.finger && g_ui.hr > 0 &&
                (g_ui.hr < HR_ALARM_LOW || g_ui.hr > HR_ALARM_HIGH))
@@ -516,6 +620,34 @@ int main(void)
                 g_ui.alarm = 0;
                 ui_dirty = 1;
                 printf("[ALARM] cleared, HR=%d bpm\r\n", (int)g_ui.hr);
+            }
+
+            /* 低血氧判断：只采信"算法有效 + 未运动"的结果，连续约 10 秒才确认 */
+            if(g_ui.spo2_valid && g_ui.spo2 > 0 && g_ui.spo2 < SPO2_ALARM_LOW)
+            {
+                if(spo2_alarm_cnt < SPO2_ALARM_CONFIRM)
+                    spo2_alarm_cnt++;
+            }
+            else
+            {
+                spo2_alarm_cnt = 0;
+            }
+
+            if(spo2_alarm_cnt >= SPO2_ALARM_CONFIRM)
+            {
+                if(!g_ui.spo2_alarm)
+                {
+                    g_ui.spo2_alarm = 1;
+                    ui_dirty = 1;
+                    printf("[ALARM] SpO2=%d%%, below %d%%\r\n",
+                           (int)g_ui.spo2, SPO2_ALARM_LOW);
+                }
+            }
+            else if(g_ui.spo2_alarm)
+            {
+                g_ui.spo2_alarm = 0;
+                ui_dirty = 1;
+                printf("[ALARM] SpO2 cleared, now %d%%\r\n", (int)g_ui.spo2);
             }
 
             if(!ds_busy)
@@ -551,9 +683,10 @@ int main(void)
         }
 
         /* ---------- 驱动执行器 ---------- */
-        if(g_ui.alarm)
+        if(g_ui.alarm || g_ui.spo2_alarm)
         {
-            /* 报警优先：蜂鸣器 + 两颗 LED 同步间歇闪烁（约 320ms 一拍） */
+            /* 报警优先：蜂鸣器 + 两颗 LED 同步间歇闪烁（约 320ms 一拍）
+             * 心率异常与低血氧共用同一套闪烁，避免两个报警互相抢节拍 */
             alarm_blink++;
             if(alarm_blink & 0x20)
             {

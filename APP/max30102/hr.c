@@ -17,6 +17,11 @@ static u16 s_ibi_buf[HR_IBI_AVG_NUM];
 static u8  s_ibi_cnt;
 static u8  s_ibi_pos;
 
+/* FIFO 关闭硬件平均后是 100Hz，这里再做 4 点平均并抽取到 25Hz，
+   与改动前的等效（原来是芯片内部做 4 次平均） */
+static u32 s_dec_sum;
+static u8  s_dec_cnt;
+
 
 void HR_Init(void)
 {
@@ -33,6 +38,8 @@ void HR_Init(void)
 	s_stable     = 0;
 	s_ibi_cnt    = 0;
 	s_ibi_pos    = 0;
+	s_dec_sum    = 0;
+	s_dec_cnt    = 0;
 }
 
 
@@ -123,8 +130,10 @@ void HR_Feed(u32 ir)
 	if(ac > 0 && (u32)ac > s_peak_max)
 		s_peak_max = (u32)ac;
 
-	/* 局部极大：前一个点高于它前一个点、也高于当前点，且幅度超过峰值一半 */
-	if(s_ac_prev > s_ac_prev2 && s_ac_prev > ac && s_ac_prev > (s32)(s_peak_max / 2))
+	/* 局部极大：前一个点高于它前一个点、也高于当前点，且幅度超过峰值的 1/3
+	 * 阈值从 1/2 放松到 1/3：AC/DC 只有 0.3% 时，噪声尖峰会临时抬高 s_peak_max，
+	 * 卡在 1/2 会让真实心跳永远够不到阈值，表现为 IBI 恒为 0 */
+	if(s_ac_prev > s_ac_prev2 && s_ac_prev > ac && s_ac_prev > (s32)(s_peak_max / 3))
 	{
 		if(s_peak_valid)
 		{
@@ -160,9 +169,30 @@ void HR_Feed(u32 ir)
 	s_ac_prev2 = s_ac_prev;
 	s_ac_prev  = ac;
 
-	/* 峰值幅度每 64 个样本衰减 1/8，避免阈值一直被历史最大值卡住 */
-	if((s_idx & 0x3F) == 0 && s_peak_max > 200)
+	/* 峰值幅度每 32 个样本（1.28 秒）衰减 1/8，避免阈值被一次噪声尖峰长期卡住 */
+	if((s_idx & 0x1F) == 0 && s_peak_max > 200)
 		s_peak_max -= (s_peak_max >> 3);
+}
+
+
+/*******************************************************************************
+* 函 数 名 : HR_Feed100Hz
+* 函数功能 : 送入 100Hz 原始红外样本，内部 4 点平均后按 25Hz 送给 HR_Feed
+* 说    明 : MAX30102 的 FIFO 硬件平均已关闭（血氧算法需要 100Hz），
+*            这里用软件补齐原来的 4 次平均，HR_FS 仍为 25Hz，算法参数无需改动
+*******************************************************************************/
+void HR_Feed100Hz(u32 ir)
+{
+	s_dec_sum += ir;
+
+	if(++s_dec_cnt < 4)
+		return;
+
+	ir        = s_dec_sum / 4;
+	s_dec_sum = 0;
+	s_dec_cnt = 0;
+
+	HR_Feed(ir);
 }
 
 

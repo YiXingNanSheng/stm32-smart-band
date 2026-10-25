@@ -122,6 +122,50 @@ u8 MAX30102_ReadReg(u8 reg, u8 *data)
 }
 
 
+/* ============================ LED 电流自动增益 ============================ */
+static u8 s_pa_ir = MAX30102_LED_PA_IR;		/* 当前红外 LED 电流档位 */
+
+/* 按实测红外直流把 LED 电流拉回量程中段：
+ * 压太紧时 DC 冲高（表面反射 + 非线性），压太松时 DC 偏低（信号弱），
+ * 两种情况都会让 AC 提取失败。按比例一次调整到位，线性关系下收敛很快。 */
+u8 MAX30102_AgcStep(u32 dc_ir)
+{
+	u8  pa = s_pa_ir;
+	u32 np;
+
+	if(dc_ir < 50000)						/* 手指还没放上去，等稳定了再调 */
+		return 0;
+
+	if(dc_ir > MAX30102_AGC_LO && dc_ir < MAX30102_AGC_HI)
+		return 0;							/* 已在目标区间，保持不动 */
+
+	np = (u32)pa * MAX30102_AGC_TARGET / dc_ir;
+
+	if(np < MAX30102_AGC_MIN) np = MAX30102_AGC_MIN;
+	if(np > MAX30102_AGC_MAX) np = MAX30102_AGC_MAX;
+	if((u8)np == pa)
+		return 0;
+
+	s_pa_ir = (u8)np;
+
+	/* 红光与红外用同一档电流。
+	 * 曾试过红光取 85%，想减少红光受环境光干扰，但 R 的计算是
+	 *   R = (ACred/DCred) / (ACir/DCir)
+	 * 一旦两路 DC 失衡，DC 比值会直接放大 R（实测 DCr/DCi 掉到 0.82，
+	 * 相当于把 R 整体乘了 1.21）。保持两路电流一致，让 DC 尽量相等，
+	 * R 才只取决于 AC 之比。 */
+	MAX30102_WriteReg(REG_LED2_PA, s_pa_ir);
+	MAX30102_WriteReg(REG_LED1_PA, s_pa_ir);
+
+	return 1;
+}
+
+u8 MAX30102_GetLedPa(void)
+{
+	return s_pa_ir;
+}
+
+
 /* ============================ 初始化 ============================ */
 void MAX30102_Init(void)
 {
@@ -157,15 +201,21 @@ void MAX30102_Init(void)
 	MAX30102_WriteReg(REG_MODE_CONFIG, 0x40);
 	delay_ms(20);
 
-	/* FIFO：4 次平均、满则覆盖旧数据（ROLLOVER=1，绝不能关，否则满后停采）、剩 15 空位 */
-	MAX30102_WriteReg(REG_FIFO_CONFIG, 0x5F);
+	/* FIFO 配置 = 0x1F：bit7:5=000 不做硬件平均，bit4=1 FIFO回绕覆盖，bit3:0=15 剩15组时拉INT
+	 * 注意 1：血氧算法（spo2.c）按官方参数需要 100Hz 原始样本，所以关掉硬件平均；
+	 *         心率仍保持 25Hz 有效速率，由 HR_Feed100Hz() 在软件里做 4 点平均后抽取。
+	 * 注意 2：有些资料写 0x0F，但 0x0F 的 bit4=0 会关闭回绕 —— 100Hz 下 32 组只要 0.32 秒
+	 *         就写满，一旦主循环有停顿就直接停采，表现为心率/血氧永久无数据，切勿照抄。 */
+	MAX30102_WriteReg(REG_FIFO_CONFIG, 0x1F);
 	/* SpO2 模式：红光 + 红外两路 */
 	MAX30102_WriteReg(REG_MODE_CONFIG, 0x03);
 	/* ADC 量程 4096nA、采样率 100Hz、脉宽 411us（18 bit） */
 	MAX30102_WriteReg(REG_SPO2_CONFIG, 0x27);
-	/* LED 电流 0x24 ≈ 7.2mA，信号不够再往 0x3F 调 */
-	MAX30102_WriteReg(REG_LED1_PA, 0x24);
-	MAX30102_WriteReg(REG_LED2_PA, 0x24);
+	/* LED 电流先给一个偏小的初始值，随后由 MAX30102_AgcStep() 按实测 DC 自动调整。
+	 * 起始定得小一点，避免手指一贴上去就冲到接近饱和。 */
+	s_pa_ir = MAX30102_LED_PA_IR;
+	MAX30102_WriteReg(REG_LED1_PA, MAX30102_LED_PA_RED);
+	MAX30102_WriteReg(REG_LED2_PA, MAX30102_LED_PA_IR);
 
 	MAX30102_ClearFIFO();
 }
@@ -275,8 +325,8 @@ u8 MAX30102_Poll(void)
 	cnt = (u8)((wp + 32 - rp) % 32);
 	if(cnt == 0)
 		return 0;
-	if(cnt > 8)
-		cnt = 8;
+	if(cnt > 16)								/* 100Hz 下一个主循环可能积压多组，一次多搬一些 */
+		cnt = 16;
 
 	for(i = 0; i < cnt; i++)
 	{
